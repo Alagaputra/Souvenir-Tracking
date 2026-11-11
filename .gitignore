@@ -1,0 +1,26 @@
+# Dependencies and build output
+node_modules/
+.next/
+out/
+
+# Local configuration (keep the public example)
+.env*
+!.env.example
+
+# Generated files and test reports
+*.tsbuildinfo
+playwright-report/
+test-results/
+coverage/
+
+# Local database, exports, caches, and preview artifacts
+/arsip-lokal/
+.npm-cache/
+.preview/
+.local/
+
+# Logs and operating system files
+*.log
+.DS_Store
+Thumbs.db
+Desktop.ini

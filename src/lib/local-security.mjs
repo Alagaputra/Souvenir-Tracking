@@ -1,0 +1,50 @@
+import {
+  randomBytes,
+  scrypt as derive,
+  timingSafeEqual,
+  createHash,
+} from "node:crypto";
+import { promisify } from "node:util";
+const scrypt = promisify(derive);
+export const SESSION_COOKIE = "souv_session";
+export const SESSION_SECONDS = 7 * 24 * 60 * 60;
+const options = { N: 65536, r: 8, p: 1, maxmem: 96 * 1024 * 1024 };
+export async function hashPassword(password) {
+  const salt = randomBytes(16).toString("hex");
+  const key = await scrypt(password, salt, 64, options);
+  return `scrypt$${salt}$${key.toString("hex")}`;
+}
+export async function verifyPassword(password, stored) {
+  if (typeof password !== "string" || password.length > 256) return false;
+  const parts = typeof stored === "string" ? stored.split("$") : [];
+  const valid =
+    parts.length === 3 &&
+    parts[0] === "scrypt" &&
+    /^[a-f0-9]{32}$/.test(parts[1]) &&
+    /^[a-f0-9]{128}$/.test(parts[2]);
+  const key = await scrypt(
+    password,
+    valid ? parts[1] : "00000000000000000000000000000000",
+    64,
+    options,
+  );
+  return valid && timingSafeEqual(key, Buffer.from(parts[2], "hex"));
+}
+export function newSession() {
+  return randomBytes(32).toString("hex");
+}
+export function tokenHash(token) {
+  return createHash("sha256").update(token).digest("hex");
+}
+export function readSession(request) {
+  const part = request.headers
+    .get("cookie")
+    ?.split(";")
+    .map((v) => v.trim())
+    .find((v) => v.startsWith(SESSION_COOKIE + "="));
+  const token = part?.slice(SESSION_COOKIE.length + 1);
+  return token && /^[a-f0-9]{64}$/.test(token) ? token : null;
+}
+export function sessionCookie(request, token = "") {
+  return `${SESSION_COOKIE}=${token}; Path=/; HttpOnly; SameSite=Lax; Max-Age=${token ? SESSION_SECONDS : 0}${new URL(request.url).protocol === "https:" ? "; Secure" : ""}`;
+}

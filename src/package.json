@@ -1,0 +1,46 @@
+{
+  "name": "funding-souvenir-app",
+  "version": "1.0.0",
+  "private": true,
+  "scripts": {
+    "dev": "next dev --hostname 0.0.0.0",
+    "build": "next build",
+    "start": "next start --hostname 0.0.0.0",
+    "typecheck": "tsc --noEmit",
+    "test": "node --test tests/*.test.mjs",
+    "test:e2e": "playwright test",
+    "preview:demo": "node scripts/preview-demo.mjs",
+    "local": "node scripts/run-local.mjs",
+    "db:setup": "node scripts/setup-local.mjs",
+    "db:start": "node scripts/setup-local.mjs",
+    "db:check": "node scripts/check-local.mjs",
+    "test:db": "node --env-file=.env.local --test tests/local-database.integration.mjs"
+  },
+  "dependencies": {
+    "jszip": "^3.10.1",
+    "class-variance-authority": "^0.7.1",
+    "clsx": "^2.1.1",
+    "tailwind-merge": "^3.3.1",
+    "next": "^16.0.0",
+    "react": "^19.2.0",
+    "react-dom": "^19.2.0",
+    "lucide-react": "^0.468.0",
+    "html5-qrcode": "^2.3.8",
+    "qrcode": "^1.5.4"
+  },
+  "devDependencies": {
+    "mermaid": "11.15.0",
+    "typescript": "^5.9.0",
+    "@types/node": "^24.0.0",
+    "@types/react": "^19.2.0",
+    "@types/react-dom": "^19.2.0",
+    "@types/qrcode": "^1.5.5",
+    "tailwindcss": "^4.1.0",
+    "@tailwindcss/postcss": "^4.1.0",
+    "@playwright/test": "^1.56.0",
+    "esbuild": "^0.25.0"
+  },
+  "engines": {
+    "node": ">=22"
+  }
+}
