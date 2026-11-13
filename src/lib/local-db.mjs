@@ -2,10 +2,13 @@ import { execFile } from "node:child_process";
 import { existsSync } from "node:fs";
 import { join } from "node:path";
 
+// Adapter server: baca koneksi lokal -> jalankan psql -> kembalikan baris sebagai JSON.
+// Aplikasi tidak memakai koneksi pool/driver PostgreSQL; setiap eksekusi membuka psql.
 export function databaseConfigured() {
   return !!process.env.DATABASE_URL?.trim();
 }
 export function databaseOptions() {
+  // Kredensial diteruskan lewat environment proses anak, bukan argumen command line.
   if (!databaseConfigured()) throw new Error("LOCAL_DB_NOT_CONFIGURED");
   let url;
   try {
@@ -41,8 +44,8 @@ export function databaseOptions() {
   };
 }
 
-// Values are passed on stdin, never a shell command or process argument. Base64
-// encodes text as a SQL expression; only this module constructs these literals.
+// Nilai dikirim melalui stdin. Teks diubah menjadi ekspresi SQL berbasis Base64;
+// pembentukan literal dipusatkan di sini agar input tidak disisipkan sebagai SQL mentah.
 function literal(value) {
   if (value === null || value === undefined) return "NULL";
   if (typeof value === "boolean") return value ? "TRUE" : "FALSE";
@@ -57,6 +60,7 @@ function literal(value) {
 export async function executeSQL(sql) {
   const { executable, env } = databaseOptions();
   try {
+    // -X mengabaikan konfigurasi psql pengguna; ON_ERROR_STOP menghentikan SQL saat gagal.
     const child = execFile(
       executable,
       [
@@ -87,6 +91,7 @@ export async function executeSQL(sql) {
         if (code === 0) resolve(stdout);
         else {
           const domain = /SOUV:([^\r\n]+)/.exec(stderr);
+          // Fungsi SQL memberi awalan SOUV: untuk pesan bisnis yang boleh tampil di UI.
           const error = new Error(
             domain
               ? domain[1].trim()
@@ -114,13 +119,15 @@ export async function executeSQL(sql) {
   }
 }
 export async function query(sql, values = []) {
+  // Ganti placeholder $1, $2, ... dengan literal dari adapter, lalu bungkus SELECT
+  // menjadi array JSON agar pemanggil selalu menerima bentuk data yang sama.
   const bound = sql.replace(/\$(\d+)\b/g, (_, index) => {
     if (Number(index) > values.length)
       throw new Error("Parameter database tidak lengkap.");
     return literal(values[Number(index) - 1]);
   });
-  // PostgreSQL requires data-modifying CTEs at the top level. Hoist the
-  // caller's WITH clause while wrapping only its final SELECT in JSON.
+  // CTE yang menulis data harus tetap berada di tingkat teratas PostgreSQL.
+  // Pisahkan WITH dari SELECT akhir; hanya SELECT akhir yang dibungkus menjadi JSON.
   let prefix = "",
     select = bound;
   if (/^WITH\b/i.test(bound)) {

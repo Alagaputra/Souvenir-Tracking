@@ -8,5 +8,6 @@ export default function Scanner(props: {
   autoStart?: boolean;
 }) {
   const mobile = useMobileLayout();
+  // Kamera hanya dipasang pada viewport HP; desktop memakai pemilihan barang manual.
   return mobile ? <LiveScanner {...props} /> : null;
 }

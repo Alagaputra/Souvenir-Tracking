@@ -9,6 +9,7 @@ const scrypt = promisify(derive);
 export const SESSION_COOKIE = "souv_session";
 export const SESSION_SECONDS = 7 * 24 * 60 * 60;
 const options = { N: 65536, r: 8, p: 1, maxmem: 96 * 1024 * 1024 };
+// Salt acak membuat hash berbeda meskipun dua akun memakai password yang sama.
 export async function hashPassword(password) {
   const salt = randomBytes(16).toString("hex");
   const key = await scrypt(password, salt, 64, options);
@@ -28,12 +29,15 @@ export async function verifyPassword(password, stored) {
     64,
     options,
   );
+  // Hash tidak valid tetap melewati scrypt; hasil yang valid dibandingkan dengan
+  // timingSafeEqual untuk menghindari perbandingan byte yang berhenti terlalu awal.
   return valid && timingSafeEqual(key, Buffer.from(parts[2], "hex"));
 }
 export function newSession() {
   return randomBytes(32).toString("hex");
 }
 export function tokenHash(token) {
+  // Token sesi bersifat acak; simpan sidiknya agar token asli tidak ada di tabel sesi.
   return createHash("sha256").update(token).digest("hex");
 }
 export function readSession(request) {
@@ -46,5 +50,7 @@ export function readSession(request) {
   return token && /^[a-f0-9]{64}$/.test(token) ? token : null;
 }
 export function sessionCookie(request, token = "") {
+  // Token kosong menghapus cookie. HttpOnly membatasi akses JavaScript browser;
+  // atribut Secure ditambahkan bila permintaan masuk melalui HTTPS.
   return `${SESSION_COOKIE}=${token}; Path=/; HttpOnly; SameSite=Lax; Max-Age=${token ? SESSION_SECONDS : 0}${new URL(request.url).protocol === "https:" ? "; Secure" : ""}`;
 }

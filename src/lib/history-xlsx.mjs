@@ -1,5 +1,7 @@
 import JSZip from "jszip";
 
+// Ekspor berjalan di browser: data riwayat -> XML worksheet/tabel -> arsip ZIP .xlsx.
+// Sel teks memakai inlineStr agar nama/catatan pengguna dibaca sebagai teks Excel.
 export const XLSX_MIME =
   "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet";
 export const historyHeaders = [
@@ -17,15 +19,15 @@ const escape = (value) => String(value ?? "")
 const textCell = (ref, value, style = 0) =>
   `<c r="${ref}" s="${style}" t="inlineStr"><is><t xml:space="preserve">${escape(value)}</t></is></c>`;
 
-// Excel dates have no timezone. Store Jakarta wall time as a serial date,
-// independent of the timezone on the computer generating or opening the file.
+// Tanggal Excel tidak menyimpan zona waktu. Geser timestamp ke jam WIB sebelum
+// mengubahnya menjadi serial Excel; 25569 adalah selisih epoch Excel dan Unix.
 export function excelDateWIB(timestamp) {
   const ms = new Date(timestamp).getTime();
   if (!Number.isFinite(ms)) throw new Error("Tanggal riwayat tidak valid.");
   return (ms + 7 * 60 * 60 * 1000) / 86400000 + 25569;
 }
 
-/** Build a single-sheet OOXML workbook with a native Excel table. */
+/** Bentuk workbook satu sheet dari data yang sudah disaring oleh tampilan riwayat. */
 export async function historyXlsx(movements) {
   if (!movements.length) throw new Error("Tidak ada riwayat untuk diekspor.");
   const zip = new JSZip();
@@ -43,6 +45,7 @@ export async function historyXlsx(movements) {
   });
   zip.file("[Content_Types].xml", xml(`<Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types"><Default Extension="rels" ContentType="application/vnd.openxmlformats-package.relationships+xml"/><Default Extension="xml" ContentType="application/xml"/><Override PartName="/xl/workbook.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet.main+xml"/><Override PartName="/xl/worksheets/sheet1.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.worksheet+xml"/><Override PartName="/xl/styles.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.styles+xml"/><Override PartName="/xl/tables/table1.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.table+xml"/></Types>`));
   const relationships = (items) => xml(`<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">${items.map(([id, type, target]) => `<Relationship Id="${id}" Type="${rel}/${type}" Target="${target}"/>`).join("")}</Relationships>`);
+  // Bagian OOXML saling ditautkan: workbook menunjuk worksheet, tabel, dan style.
   zip.file("_rels/.rels", relationships([["rId1", "officeDocument", "xl/workbook.xml"]]));
   zip.file("xl/workbook.xml", xml(`<workbook xmlns="${ns}" xmlns:r="${rel}"><bookViews><workbookView/></bookViews><sheets><sheet name="Riwayat" sheetId="1" r:id="rId1"/></sheets></workbook>`));
   zip.file("xl/_rels/workbook.xml.rels", relationships([["rId1", "worksheet", "worksheets/sheet1.xml"], ["rId2", "styles", "styles.xml"]]));

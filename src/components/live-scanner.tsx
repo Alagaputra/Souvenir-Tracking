@@ -19,6 +19,7 @@ export default function Scanner({
   const video = useRef<HTMLVideoElement>(null);
   const readerId = `qr-${useId().replace(/[^a-z0-9]/gi, "")}`;
   const callback = useRef(onScan);
+  // Perbarui callback tanpa perlu memulai ulang kamera pada setiap render induk.
   useEffect(() => {
     callback.current = onScan;
   }, [onScan]);
@@ -30,6 +31,7 @@ export default function Scanner({
     let stream: MediaStream | undefined;
     let timer: ReturnType<typeof setTimeout> | undefined;
     const accept = (text: string) => {
+      // Satu sesi kamera hanya menerima satu hasil, lalu berhenti untuk membuka form.
       if (accepted || cancelled) return;
       accepted = true;
       callback.current(text);
@@ -46,19 +48,20 @@ export default function Scanner({
             BarcodeDetector?: new (options: { formats: string[] }) => Detector;
           }
         ).BarcodeDetector;
+        // Utamakan decoder bawaan browser; gunakan html5-qrcode jika tidak tersedia.
         let detector: Detector | undefined;
         try {
           if (DetectorClass)
             detector = new DetectorClass({ formats: ["qr_code"] });
         } catch {
-          /* Try the library below. */
+          /* Lanjutkan ke decoder library jika detector bawaan gagal dibuat. */
         }
         if (!detector) {
           let Library: typeof import("html5-qrcode") | undefined;
           try {
             Library = await import("html5-qrcode");
           } catch {
-            /* Decoder package can be absent in the offline preview. */
+            /* Pratinjau offline bisa berjalan tanpa paket decoder cadangan. */
           }
           if (cancelled) return;
           if (Library) {
@@ -100,7 +103,7 @@ export default function Scanner({
               return;
             }
           } catch {
-            /* Retry when a complete frame is available. */
+            /* Coba lagi pada frame berikutnya jika gambar belum dapat dibaca. */
           }
           if (!cancelled && !accepted) timer = setTimeout(read, 200);
         };
@@ -118,6 +121,7 @@ export default function Scanner({
     };
     void start();
     return () => {
+      // Saat berhenti/unmount, batalkan pembacaan dan lepaskan semua track kamera.
       cancelled = true;
       clearTimeout(timer);
       stream?.getTracks().forEach((track) => track.stop());

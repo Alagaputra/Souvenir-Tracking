@@ -7,6 +7,7 @@ import Scanner from "./scanner";
 import { Modal } from "./ui/dialog";
 import { Button } from "./ui/button";
 import QuantityStepper from "./quantity-stepper";
+// Alur scan cepat: baca QR -> pilih produk/mode -> isi form -> konfirmasi lewat onRecord.
 export default function QuickScan({
   products,
   user,
@@ -30,6 +31,7 @@ export default function QuickScan({
   const [busy, setBusy] = useState(false);
   const requestId = useRef("");
   function select(id: string, selectedMode: "in" | "out" = "out") {
+    // Pilihan produk baru memulai transaksi baru, sehingga ID retry lama dibersihkan.
     const match = products.find((p) => p.id === id && p.active);
     if (!match)
       throw new Error("Produk tidak ditemukan atau sudah diarsipkan.");
@@ -56,6 +58,7 @@ export default function QuickScan({
     setBusy(true);
     setError("");
     requestId.current ||= crypto.randomUUID();
+    // Pertahankan ID saat gagal agar retry tidak menggandakan pencatatan di database.
     try {
       await onRecord({
         kind: mode,

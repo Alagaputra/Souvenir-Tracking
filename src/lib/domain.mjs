@@ -1,3 +1,4 @@
+// Aturan murni yang dipakai UI dan backend: validasi jumlah/teks, QR, dan tanggal.
 export function positiveInteger(value) {
   if (typeof value !== "number" && typeof value !== "string")
     throw new Error("Jumlah harus berupa angka.");
@@ -12,6 +13,7 @@ export function requiredText(value, label, max = 160) {
   return value.trim();
 }
 export function parseProductQR(value) {
+  // Tetap menerima label lama SOUVENIR:UUID, lalu mencoba format tautan produk.
   const match =
     /^SOUVENIR:([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})$/i.exec(
       value.trim(),
@@ -20,6 +22,7 @@ export function parseProductQR(value) {
   return parseProductLink(value).productId;
 }
 export function parseProductLink(value) {
+  // Ambil identitas produk dan mode dari URL yang valid; fungsi ini tidak menulis stok.
   try {
     const url = new URL(value);
     const productId = url.searchParams.get("product"),
@@ -52,6 +55,7 @@ export function productLink(origin, productId, mode = "out") {
   return url.href;
 }
 export function inDateRange(timestamp, from, to) {
+  // Bandingkan tanggal kalender WIB supaya filter tidak bergeser karena zona waktu perangkat.
   const date = new Intl.DateTimeFormat("en-CA", {
     timeZone: "Asia/Jakarta",
     year: "numeric",

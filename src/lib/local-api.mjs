@@ -10,6 +10,9 @@ import {
 } from "./local-security.mjs";
 import { positiveInteger, requiredText } from "./domain.mjs";
 
+// Alur backend: route Next.js -> handleAPI -> validasi/sesi -> query PostgreSQL.
+// Perubahan stok dipusatkan di fungsi SQL souv.write_action pada 001_initial.sql;
+// modul ini menyiapkan payload dan mengubah hasilnya menjadi respons HTTP.
 function fail(message, status = 400) {
   const error = new Error(message);
   error.status = status;
@@ -22,6 +25,7 @@ function json(body, status = 200, headers = {}) {
   });
 }
 function sameOrigin(request) {
+  // Semua aksi tulis harus berasal dari origin aplikasi yang menerima permintaan.
   if (request.headers.get("origin") !== new URL(request.url).origin)
     fail("Akses tidak diizinkan.", 403);
 }
@@ -39,6 +43,8 @@ function profileFields(alias = "u") {
   return `${alias}.id,${alias}.name,${alias}.email,${alias}.role,${alias}.active`;
 }
 export async function authenticated(request) {
+  // Cookie membawa token asli; database hanya menyimpan hash dan masa berlaku sesi.
+  // Status akun diperiksa setiap kali API diakses agar akun nonaktif langsung ditolak.
   const token = readSession(request);
   if (!token) fail("Silakan masuk kembali.", 401);
   const users = await query(
@@ -59,6 +65,7 @@ async function login(request) {
   )
     fail("Email atau password tidak valid.");
   const email = body.email.trim().toLowerCase();
+  // Hitung percobaan sebelum memeriksa password; pembatasan berlaku per hash email.
   const attempt = (
     await query("SELECT souv.claim_login_attempt($1) AS allowed", [
       tokenHash(email),
@@ -78,6 +85,8 @@ async function login(request) {
   )
     fail("Email atau password salah, atau akun tidak aktif.", 401);
   const token = newSession();
+  // Periksa ulang akun sambil mengunci baca agar sesi tidak dibuat untuk akun
+  // yang dinonaktifkan bersamaan. Token asli hanya dikirim melalui cookie HttpOnly.
   const sessions = await query(
     `WITH live AS (SELECT id FROM souv.users WHERE id=$1::uuid AND active FOR SHARE), inserted AS (INSERT INTO souv.sessions(token_hash,user_id,expires_at) SELECT $2,id,now()+($3::integer*interval '1 second') FROM live RETURNING user_id) SELECT user_id FROM inserted`,
     [user.id, tokenHash(token), SESSION_SECONDS],
@@ -102,10 +111,12 @@ async function logout(request) {
   return json({ ok: true }, 200, { "Set-Cookie": sessionCookie(request) });
 }
 async function workspace(request) {
+  // Tanpa konfigurasi database, frontend menerima penanda untuk membuka mode demo.
   if (!databaseConfigured()) return json({ setup: true });
   const user = await authenticated(request);
   const products = await query("SELECT * FROM souv.products ORDER BY name");
   const movements = await query(
+    // Admin melihat seluruh tim; anggota hanya menerima transaksi miliknya.
     `SELECT id,product_id,actor_id,kind,quantity,recipient,note,created_at,reversal_of,cancelled,product_name,product_sku,actor_name FROM souv.movements WHERE ($1::boolean OR actor_id=$2::uuid) ORDER BY created_at DESC,id DESC LIMIT 5000`,
     [user.role === "admin", user.id],
   );
@@ -118,7 +129,8 @@ async function workspace(request) {
 async function stockRegister(request) {
   const user = await authenticated(request);
   if (user.role !== "admin") fail("Akses tidak diizinkan.", 403);
-  // One statement provides a consistent stock/history snapshot without pagination.
+  // Satu query mengambil stok dan seluruh riwayat dari snapshot database yang sama.
+  // Register tidak memakai batas 5.000 transaksi seperti tampilan workspace.
   const [row] = await query(`SELECT jsonb_build_object(
     'products',COALESCE((SELECT jsonb_agg(p ORDER BY p.name,p.id) FROM souv.products p),'[]'::jsonb),
     'movements',COALESCE((SELECT jsonb_agg(m ORDER BY m.created_at,m.id) FROM (
@@ -130,6 +142,8 @@ async function stockRegister(request) {
   return json(row.register);
 }
 function movement(body) {
+  // in/out menerima jumlah positif; adjust menerima stok fisik tujuan (boleh nol).
+  // Untuk reversal, database mencari transaksi asal dan menghitung nilai pembaliknya.
   const kind = body.kind;
   if (!["in", "out", "adjust", "reversal"].includes(kind))
     fail("Jenis pencatatan tidak valid.");
@@ -158,6 +172,7 @@ function movement(body) {
   };
 }
 async function writeWorkspace(request) {
+  // Urutan simpan: cek origin -> cek sesi/peran -> validasi payload -> fungsi SQL.
   sameOrigin(request);
   const user = await authenticated(request);
   const body = await request.json();
@@ -218,9 +233,13 @@ async function writeWorkspace(request) {
     user.id,
     JSON.stringify(action),
   ]);
+  // Fungsi SQL mengunci produk, memeriksa request_id, lalu mengubah stok dan
+  // mencatat riwayat secara atomik. Pengulangan payload yang sama tidak menambah stok lagi.
   return json({ ok: true });
 }
 async function members(request) {
+  // ID terisi berarti mengubah status akun; tanpa ID berarti membuat akun baru.
+  // Password akun baru di-hash di server sebelum diteruskan ke database.
   sameOrigin(request);
   const user = await authenticated(request);
   if (user.role !== "admin") fail("Akses tidak diizinkan.", 403);
@@ -267,6 +286,7 @@ async function upload(request) {
   )
     fail("Gunakan foto JPG, PNG, atau WebP maksimal 2 MB.");
   const data = Buffer.from(await file.arrayBuffer());
+  // Selain MIME/ukuran, periksa penanda byte agar isi file sesuai format gambar.
   const signature =
     file.type === "image/png"
       ? data
@@ -304,6 +324,7 @@ async function photo(request, id) {
 }
 
 export async function handleAPI(request) {
+  // Semua route API memakai dispatcher ini agar format respons dan error konsisten.
   try {
     const path = new URL(request.url).pathname,
       method = request.method;
