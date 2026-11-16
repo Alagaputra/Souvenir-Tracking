@@ -1,5 +1,7 @@
+// @ts-check
 // Only a configured public host can change the scheme seen by the local API.
 // Arbitrary forwarded headers must not affect CSRF checks or session cookies.
+/** @param {string} path @param {string} [host] @param {string} [publicOrigin] */
 export function requestURL(
   path,
   host = "localhost:3000",

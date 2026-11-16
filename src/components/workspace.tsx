@@ -29,7 +29,6 @@ import {
   ChevronRight,
   CircleHelp,
   ClipboardList,
-  Coffee,
   Download,
   Edit3,
   FileClock,
@@ -47,15 +46,11 @@ import {
   Search,
   Settings2,
   ShieldCheck,
-  ShoppingBag,
   SlidersHorizontal,
   TriangleAlert,
   Trash2,
-  Umbrella,
   Users,
   X,
-  BookOpen,
-  PenLine,
   KeyRound,
 } from "lucide-react";
 // Bentuk data aplikasi untuk pemeriksaan TypeScript; @/ menunjuk akar proyek.
@@ -64,7 +59,6 @@ import type { Product, Snapshot, Movement } from "@/lib/types";
 import { demoSnapshot, demoRegister } from "@/lib/demo";
 // Fungsi pengolahan tanggal serta pembacaan/pembuatan tautan produk QR.
 import {
-  inDateRange,
   parseProductQR,
   parseProductLink,
   productLink,
@@ -78,30 +72,17 @@ import { Modal } from "./ui/dialog";
 import Scanner from "./scanner";
 import QuickScan from "./quick-scan";
 import QuantityStepper from "./quantity-stepper";
-import MobileHistory from "./mobile-history";
+import type { Page, Dialog } from "./workspace-types";
+import { ProductArt } from "./product-art";
+import ProductTable from "./product-table";
+import HistoryPanel from "./history-panel";
+import HistoryTable from "./history-table";
+import { useHistory } from "@/lib/use-history";
 // Hook buatan proyek: true untuk lebar viewport maksimal 720 px (tampilan HP).
 import { useMobileLayout } from "@/lib/use-mobile-layout";
 
 // 2. TIPE & BANTUAN: pilihan halaman/dialog, label, pemformatan, dan komponen kecil.
 // Union type membatasi nilai page agar hanya memakai nama halaman yang tersedia.
-type Page =
-  "dashboard" | "products" | "incoming" | "give" | "history" | "members";
-// Dialog menyimpan jenis popup dan data produk/transaksi/anggota yang sedang dibuka.
-type Dialog = {
-  type:
-  | "product"
-  | "qr"
-  | "adjust"
-  | "reversal"
-  | "member"
-  | "archive"
-  | "delete-product"
-  | "member-status"
-  product?: Product;
-  movement?: Movement;
-  memberId?: string;
-  active?: boolean;
-} | null;
 // Nama internal halaman diterjemahkan menjadi judul yang terlihat oleh pengguna.
 const pageNames: Record<Page, string> = {
   dashboard: "Ringkasan",
@@ -113,14 +94,6 @@ const pageNames: Record<Page, string> = {
 };
 // Pemformatan angka Indonesia, tanggal WIB, inisial avatar, dan label transaksi.
 const number = (value: number) => value.toLocaleString("id-ID");
-const dateTime = (value: string) =>
-  new Intl.DateTimeFormat("id-ID", {
-    day: "2-digit",
-    month: "short",
-    hour: "2-digit",
-    minute: "2-digit",
-    timeZone: "Asia/Jakarta",
-  }).format(new Date(value));
 const initials = (name: string) =>
   name
     .split(" ")
@@ -135,59 +108,6 @@ const kinds = {
 };
 
 // Komponen lokal: tampilkan foto produk; jika belum ada, gunakan ikon sesuai SKU.
-function ProductArt({
-  product,
-  small = false,
-}: {
-  product: Product;
-  small?: boolean;
-}) {
-  const Icon =
-    product.sku.startsWith("TMB") || product.sku.startsWith("MUG")
-      ? Coffee
-      : product.sku.startsWith("NTB")
-        ? BookOpen
-        : product.sku.startsWith("UMB")
-          ? Umbrella
-          : product.sku.startsWith("PEN")
-            ? PenLine
-            : product.sku.startsWith("KEY")
-              ? KeyRound
-              : ShoppingBag;
-  return (
-    <span
-      className={`product-art ${small ? "art-small" : ""} art-${product.category === "Drinkware" ? "blue" : product.category === "Alat Tulis" ? "sand" : "sage"}`}
-    >
-      {product.photo ? (
-        <img src={product.photo} alt="" />
-      ) : (
-        <Icon size={small ? 21 : 27} strokeWidth={1.35} />
-      )}
-    </span>
-  );
-}
-// Komponen lokal: label stok tersedia/menipis/habis atau produk diarsipkan.
-function StockBadge({ product }: { product: Product }) {
-  const status = !product.active
-    ? "archived"
-    : product.stock === 0
-      ? "empty"
-      : product.stock <= product.minimum
-        ? "low"
-        : "good";
-  return (
-    <span className={`status status-${status}`}>
-      <i />
-      {status === "archived"
-        ? "Diarsipkan"
-        : status === "empty"
-          ? "Stok habis"
-          : status === "low"
-            ? "Stok menipis"
-            : "Tersedia"}
-    </span>
-  );
-}
 // Pembungkus fetch untuk permintaan JSON. Respons gagal dijadikan Error agar
 // pemanggil dapat menampilkan pesannya. Validasi dan penyimpanan dilakukan backend.
 async function api(url: string, body?: unknown, method = "POST") {
@@ -247,14 +167,7 @@ export default function Workspace() {
   // untuk pengguna yang sama saat data workspace dimuat ulang.
   const [linkedProduct, setLinkedProduct] = useState(false);
   const linkedUser = useRef("");
-  // Filter riwayat serta jumlah baris termuat yang sedang ditampilkan.
-  const [from, setFrom] = useState("");
-  const [to, setTo] = useState("");
-  const [actorFilter, setActorFilter] = useState("");
-  const [productFilter, setProductFilter] = useState("");
-  const [kindFilter, setKindFilter] = useState("");
-  const [historyFiltersOpen, setHistoryFiltersOpen] = useState(false);
-  const [limit, setLimit] = useState(25);
+  const history = useHistory(snapshot, page === "history");
   // ID dipertahankan untuk retry transaksi yang sama; backend mencegah duplikasi.
   // formRef menunjuk elemen <form> agar dapat di-reset setelah berhasil.
   const requestId = useRef("");
@@ -377,7 +290,6 @@ export default function Workspace() {
 
   // Berpindah bagian tampilan dan membersihkan pencarian/pilihan yang perlu di-reset.
   function navigate(next: Page) {
-    if (next !== "history") setHistoryFiltersOpen(false);
     clearProductLink();
     if (next === "give") setSelectedProduct("");
     setPage(next);
@@ -502,7 +414,10 @@ export default function Workspace() {
     requestId.current ||= crypto.randomUUID();
     try {
       ensureLive();
-      if (dialog.type === "product") {
+      if (dialog.type === "password") {
+        if (form.get("new_password") !== form.get("confirm_password")) throw new Error("Konfirmasi password tidak cocok.");
+        await mutate({ current_password: form.get("current_password"), new_password: form.get("new_password") }, "/api/account");
+      } else if (dialog.type === "product") {
         let photo = dialog.product?.photo || null;
         const file = form.get("photo");
         if (file instanceof File && file.size) {
@@ -560,7 +475,7 @@ export default function Workspace() {
           setSelectedProduct("");
           clearProductLink();
         }
-        if (productFilter === dialog.product!.id) setProductFilter("");
+        if (history.filters.product === dialog.product!.id) history.setFilter("product", "");
       }
       setDialog(null);
       requestId.current = "";
@@ -729,10 +644,10 @@ export default function Workspace() {
       .map((m) => m.reversal_of),
     ...snapshot.movements.filter((m) => m.cancelled).map((m) => m.id),
   ]);
-  const given = monthMovements
+  const given = snapshot.summary?.given ?? monthMovements
     .filter((m) => m.kind === "out" && !reversed.has(m.id))
     .reduce((n, m) => n + Math.abs(m.quantity), 0);
-  const incoming = monthMovements
+  const incoming = snapshot.summary?.incoming ?? monthMovements
     .filter((m) => m.kind === "in" && !reversed.has(m.id))
     .reduce((n, m) => n + m.quantity, 0);
   // Filter dilakukan pada data di browser, bukan dengan query baru ke database.
@@ -742,16 +657,6 @@ export default function Workspace() {
       (stockFilter !== "low" || p.stock <= p.minimum) &&
       (!category || p.category === category) &&
       `${p.name} ${p.sku}`.toLowerCase().includes(search.toLowerCase()),
-  );
-  const filteredHistory = snapshot.movements.filter(
-    (m) =>
-      inDateRange(m.created_at, from, to) &&
-      (!actorFilter || m.actor_id === actorFilter) &&
-      (!productFilter || m.product_id === productFilter) &&
-      (!kindFilter || m.kind === kindFilter) &&
-      `${m.product_name} ${m.recipient} ${m.actor_name}`
-        .toLowerCase()
-        .includes(search.toLowerCase()),
   );
   // Objek barang terpilih dan daftar menu navigasi beserta ikon masing-masing.
   const chosen = active.find((p) => p.id === selectedProduct);
@@ -764,12 +669,12 @@ export default function Workspace() {
   ];
   // Unduh Excel mengikuti seluruh hasil filter riwayat, bukan hanya baris yang terlihat.
   const exportHistory = async () => {
-    if (exportingRef.current || !filteredHistory.length) return;
+    if (exportingRef.current || history.loading || !history.total) return;
     exportingRef.current = true;
     setExporting(true);
     setError("");
     try {
-      const content = await historyXlsx(filteredHistory);
+      const content = await historyXlsx(await history.exportAll());
       downloadFile(content, "riwayat-souvenir.xlsx", XLSX_MIME);
     } catch {
       setError("Ekspor Excel gagal. Silakan coba lagi.");
@@ -800,209 +705,7 @@ export default function Workspace() {
 
   // 8. PEMBENTUK TABEL: fungsi lokal yang menghasilkan JSX dan dipakai ulang di halaman.
   // dashboard memilih versi ringkas tabel produk; tombol admin mengikuti hak akses UI.
-  const productTable = (rows: Product[], dashboard = false) => (
-    <div className="table-scroll">
-      <table className="product-table">
-        <thead>
-          <tr>
-            <th>Nama barang</th>
-            <th>Kategori</th>
-            <th>Stok tersedia</th>
-            <th>Status</th>
-            <th className="align-right">{dashboard ? "QR" : "Tindakan"}</th>
-          </tr>
-        </thead>
-        <tbody>
-          {rows.length === 0 ? (
-            <tr>
-              <td colSpan={5}>
-                <div className="empty-state">
-                  <Package size={30} />
-                  <h3>Belum ada barang di sini</h3>
-                  <p>Coba ubah pencarian atau tambahkan produk baru.</p>
-                </div>
-              </td>
-            </tr>
-          ) : (
-            rows.map((p) => (
-              <tr key={p.id}>
-                <td>
-                  <div className="product-name">
-                    <ProductArt product={p} />
-                    <div>
-                      <strong>{p.name}</strong>
-                      <small>{p.sku}</small>
-                    </div>
-                  </div>
-                </td>
-                <td className="muted">{p.category}</td>
-                <td>
-                  <strong className="stock-number">{number(p.stock)}</strong>
-                  <span className="unit">{p.unit}</span>
-                </td>
-                <td>
-                  <StockBadge product={p} />
-                </td>
-                <td>
-                  <div className="row-actions">
-                    <Button
-                      size="icon"
-                      variant="ghost"
-                      title={`QR ${p.name}`}
-                      aria-label={`QR ${p.name}`}
-                      onClick={() => openDialog({ type: "qr", product: p })}
-                    >
-                      <QrCode size={18} />
-                    </Button>
-                    {!dashboard && admin && (
-                      <>
-                        <Button
-                          size="icon"
-                          variant="ghost"
-                          aria-label={`Edit ${p.name}`}
-                          title="Edit produk"
-                          onClick={() =>
-                            openDialog({ type: "product", product: p })
-                          }
-                        >
-                          <Edit3 size={16} />
-                        </Button>
-                        <Button
-                          size="icon"
-                          variant="ghost"
-                          aria-label={`Sesuaikan ${p.name}`}
-                          title="Penyesuaian stok"
-                          disabled={!p.active}
-                          onClick={() =>
-                            openDialog({ type: "adjust", product: p })
-                          }
-                        >
-                          <SlidersHorizontal size={16} />
-                        </Button>
-                        <Button
-                          size="icon"
-                          variant="ghost"
-                          aria-label={`${p.active ? "Arsipkan" : "Aktifkan"} ${p.name}`}
-                          title={p.active ? "Arsipkan" : "Aktifkan"}
-                          onClick={() =>
-                            openDialog({ type: "archive", product: p })
-                          }
-                        >
-                          <Archive size={16} />
-                        </Button>
-                        <Button
-                          size="icon"
-                          variant="ghost"
-                          className="product-delete"
-                          aria-label={`Hapus ${p.name}`}
-                          title="Hapus produk"
-                          onClick={() => openDialog({ type: "delete-product", product: p })}
-                        >
-                          <Trash2 size={16} />
-                        </Button>
-                      </>
-                    )}
-                  </div>
-                </td>
-              </tr>
-            ))
-          )}
-        </tbody>
-      </table>
-    </div>
-  );
   // Tabel riwayat PC atau aktivitas ringkas dashboard; daftar HP memakai MobileHistory.
-  const historyTable = (rows: Movement[], compact = false) => (
-    <div className="table-scroll">
-      <table>
-        <thead>
-          <tr>
-            <th>Aktivitas / barang</th>
-            <th>{compact ? "Petugas" : "Pemberi / petugas"}</th>
-            {!compact && <th>Nasabah / catatan</th>}
-            <th>Jumlah</th>
-            <th>Waktu (WIB)</th>
-            {!compact && admin && <th />}
-          </tr>
-        </thead>
-        <tbody>
-          {rows.length === 0 ? (
-            <tr>
-              <td colSpan={6}>
-                <div className="empty-state">
-                  <FileClock size={28} />
-                  <h3>Belum ada aktivitas</h3>
-                  <p>Pencatatan yang sesuai akan muncul di sini.</p>
-                </div>
-              </td>
-            </tr>
-          ) : (
-            rows.map((m) => (
-              <tr key={m.id}>
-                <td>
-                  <div className="activity-cell">
-                    <span className={`activity-icon ${m.kind}`}>
-                      {m.kind === "in" ? (
-                        <ArrowDownLeft size={17} />
-                      ) : m.kind === "out" ? (
-                        <ArrowUpRight size={17} />
-                      ) : (
-                        <RefreshCw size={16} />
-                      )}
-                    </span>
-                    <div>
-                      <strong>{m.product_name}</strong>
-                      <small>
-                        {kinds[m.kind]}
-                        {reversed.has(m.id) ? " · Dibatalkan" : ""}
-                      </small>
-                    </div>
-                  </div>
-                </td>
-                <td>
-                  <div className="person-cell">
-                    <span className="mini-avatar">
-                      {initials(m.actor_name)}
-                    </span>
-                    {m.actor_name}
-                  </div>
-                </td>
-                {!compact && (
-                  <td>
-                    <span>{m.recipient || "—"}</span>
-                    {m.note && <small className="cell-note">{m.note}</small>}
-                  </td>
-                )}
-                <td>
-                  <strong className={m.quantity > 0 ? "positive" : "negative"}>
-                    {m.quantity > 0 ? "+" : ""}
-                    {m.quantity}
-                  </strong>
-                </td>
-                <td className="time-cell">{dateTime(m.created_at)}</td>
-                {!compact && admin && (
-                  <td>
-                    {m.kind !== "reversal" && !reversed.has(m.id) && (
-                      <Button
-                        size="sm"
-                        variant="ghost"
-                        onClick={() =>
-                          openDialog({ type: "reversal", movement: m })
-                        }
-                      >
-                        Batalkan
-                      </Button>
-                    )}
-                  </td>
-                )}
-              </tr>
-            ))
-          )}
-        </tbody>
-      </table>
-    </div>
-  );
-
   // 9. HALAMAN UTAMA (JSX): bagian ini membentuk tampilan seperti <template> di Vue.
   // Elemen HTML ditulis langsung bersama komponen React; className diatur CSS global/tema.
   // {kondisi && (...)} menampilkan blok saat kondisi benar, mirip v-if pada Vue.
@@ -1113,6 +816,7 @@ export default function Workspace() {
             <strong>{pageNames[page]}</strong>
           </div>
           <div className="topbar-right">
+            {!snapshot.demo && <Button size="icon" variant="ghost" aria-label="Ubah password" title="Ubah password" onClick={() => openDialog({ type: "password" })}><KeyRound size={18} /></Button>}
             <span className="team-indicator">
               <i />
               Tim Funding
@@ -1200,7 +904,7 @@ export default function Workspace() {
                 </Button>
               )}
               {page === "history" && (
-                <Button variant="outline" onClick={exportHistory} disabled={exporting || !filteredHistory.length}>
+                <Button variant="outline" onClick={exportHistory} disabled={exporting || !history.total || history.loading}>
                   <Download size={16} />
                   {exporting ? "Menyiapkan Excel…" : "Ekspor riwayat"}
                 </Button>
@@ -1339,7 +1043,7 @@ export default function Workspace() {
                         <option value="low">Perlu perhatian</option>
                       </select>
                     </div>
-                    {productTable(filteredProducts.slice(0, 5), true)}
+                    <ProductTable rows={filteredProducts.slice(0, 5)} admin={admin} onOpen={openDialog} dashboard />
                     <div className="table-footer">
                       <span>
                         Menampilkan {Math.min(filteredProducts.length, 5)} dari{" "}
@@ -1370,7 +1074,7 @@ export default function Workspace() {
                         <ArrowUpRight size={15} />
                       </Button>
                     </div>
-                    {historyTable(snapshot.movements.slice(0, 4), true)}
+                    <HistoryTable rows={snapshot.movements.slice(0, 4)} compact admin={admin} reversed={reversed} onCancel={movement => openDialog({ type: "reversal", movement })} />
                   </section>
                 </div>
                 {/* Kolom pendamping: pintasan pemberian dan daftar stok yang perlu perhatian. */}
@@ -1511,7 +1215,7 @@ export default function Workspace() {
                   Perbarui
                 </Button>
               </div>
-              {productTable(filteredProducts)}
+              <ProductTable rows={filteredProducts} admin={admin} onOpen={openDialog} />
               <div className="table-footer">
                 <span>{filteredProducts.length} barang ditemukan</span>
                 <span>Stok diperbarui setelah pencatatan dikonfirmasi.</span>
@@ -1819,142 +1523,7 @@ export default function Workspace() {
             </div>
           )}
 
-          {/* HALAMAN RIWAYAT: pencarian/filter dan tampilan PC/HP memakai hasil filter yang sama. */}
-          {page === "history" && (
-            <section className="panel history-panel">
-              <div className="history-controls">
-                <div className="history-search-bar">
-                  <div className="search-field">
-                    <Search size={17} />
-                    <input
-                      aria-label="Cari riwayat"
-                      placeholder="Cari barang, nasabah, atau petugas…"
-                      value={search}
-                      onChange={(e) => setSearch(e.target.value)}
-                    />
-                  </div>
-                  <Button
-                    className="history-filter-toggle"
-                    variant="outline"
-                    aria-expanded={historyFiltersOpen}
-                    aria-controls="history-filter-panel"
-                    onClick={() => setHistoryFiltersOpen(!historyFiltersOpen)}
-                  >
-                    <SlidersHorizontal size={16} />
-                    Filter
-                  </Button>
-                </div>
-                <div
-                  id="history-filter-panel"
-                  className={`history-filter-panel ${historyFiltersOpen ? "filters-open" : ""}`}
-                >
-                  <div className="history-date-filters">
-                    <label className="date-filter">
-                      Dari
-                      <input
-                        aria-label="Dari tanggal"
-                        type="date"
-                        value={from}
-                        onChange={(e) => setFrom(e.target.value)}
-                      />
-                    </label>
-                    <label className="date-filter">
-                      Sampai
-                      <input
-                        aria-label="Sampai tanggal"
-                        type="date"
-                        min={from}
-                        value={to}
-                        onChange={(e) => setTo(e.target.value)}
-                      />
-                    </label>
-                  </div>
-                  <div className="history-selects">
-                    <select
-                      aria-label="Jenis aktivitas"
-                      value={kindFilter}
-                      onChange={(e) => setKindFilter(e.target.value)}
-                    >
-                      <option value="">Semua aktivitas</option>
-                      {Object.entries(kinds).map(([key, name]) => (
-                        <option value={key} key={key}>
-                          {name}
-                        </option>
-                      ))}
-                    </select>
-                    <select
-                      aria-label="Filter barang"
-                      value={productFilter}
-                      onChange={(e) => setProductFilter(e.target.value)}
-                    >
-                      <option value="">Semua barang</option>
-                      {snapshot.products.map((p) => (
-                        <option value={p.id} key={p.id}>
-                          {p.name}
-                        </option>
-                      ))}
-                    </select>
-                    {admin && (
-                      <select
-                        aria-label="Filter petugas"
-                        value={actorFilter}
-                        onChange={(e) => setActorFilter(e.target.value)}
-                      >
-                        <option value="">Semua petugas</option>
-                        {snapshot.members.map((m) => (
-                          <option value={m.id} key={m.id}>
-                            {m.name}
-                          </option>
-                        ))}
-                      </select>
-                    )}
-                    <Button
-                      variant="ghost"
-                      size="sm"
-                      onClick={() => {
-                        setSearch("");
-                        setFrom("");
-                        setTo("");
-                        setKindFilter("");
-                        setProductFilter("");
-                        setActorFilter("");
-                      }}
-                    >
-                      Reset filter
-                    </Button>
-                  </div>
-                </div>
-              </div>
-              {/* CSS memilih tabel PC atau daftar HP; slice membatasi jumlah baris terlihat. */}
-              <div className="desktop-history">
-                {historyTable(filteredHistory.slice(0, limit))}
-              </div>
-              <MobileHistory
-                rows={filteredHistory.slice(0, limit)}
-                admin={admin}
-                reversed={reversed}
-                onCancel={(movement) =>
-                  openDialog({ type: "reversal", movement })
-                }
-              />
-              <div className="table-footer">
-                <span>
-                  {filteredHistory.length} catatan cocok · memuat maksimal 5.000
-                  catatan terbaru
-                </span>
-                {filteredHistory.length > limit && (
-                  <Button
-                    variant="ghost"
-                    size="sm"
-                    onClick={() => setLimit(limit + 25)}
-                  >
-                    Tampilkan lebih banyak
-                    <ChevronDown size={14} />
-                  </Button>
-                )}
-              </div>
-            </section>
-          )}
+          {page === "history" && <HistoryPanel snapshot={snapshot} history={history} onCancel={movement => openDialog({ type: "reversal", movement })} />}
 
           {/* HALAMAN ANGGOTA: hanya UI admin, untuk melihat akun dan mengubah statusnya. */}
           {page === "members" && admin && (
@@ -2116,7 +1685,7 @@ export default function Workspace() {
           if (!busy) setDialog(null);
         }}
         title={
-          dialog?.type === "product"
+          dialog?.type === "password" ? "Ubah password" : dialog?.type === "product"
             ? dialog.product
               ? "Edit barang"
               : "Tambah barang"
@@ -2137,7 +1706,7 @@ export default function Workspace() {
                           : "Aktifkan produk"
         }
         description={
-          dialog?.type === "qr"
+          dialog?.type === "password" ? "Sesi di perangkat lain akan diakhiri setelah password berubah." : dialog?.type === "qr"
             ? "Satu identitas tetap untuk setiap jenis souvenir."
             : dialog?.type === "delete-product"
               ? "Penghapusan permanen tidak dapat dibatalkan."
@@ -2232,6 +1801,11 @@ export default function Workspace() {
             }}
             className="dialog-form"
           >
+            {dialog?.type === "password" && <>
+              <label>Password saat ini<input name="current_password" type="password" autoComplete="current-password" required maxLength={256} /></label>
+              <label>Password baru<input name="new_password" type="password" autoComplete="new-password" required minLength={12} maxLength={128} /></label>
+              <label>Konfirmasi password baru<input name="confirm_password" type="password" autoComplete="new-password" required minLength={12} maxLength={128} /></label>
+            </>}
             {/* Form tambah/edit produk: identitas barang, batas stok, dan foto opsional. */}
             {dialog?.type === "product" && (
               <>

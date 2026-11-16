@@ -1,4 +1,6 @@
+// @ts-check
 // Aturan murni yang dipakai UI dan backend: validasi jumlah/teks, QR, dan tanggal.
+/** @param {unknown} value */
 export function positiveInteger(value) {
   if (typeof value !== "number" && typeof value !== "string")
     throw new Error("Jumlah harus berupa angka.");
@@ -7,11 +9,13 @@ export function positiveInteger(value) {
     throw new Error("Jumlah harus bilangan bulat antara 1 dan 1.000.000.");
   return n;
 }
+/** @param {unknown} value @param {string} label @param {number} [max] */
 export function requiredText(value, label, max = 160) {
   if (typeof value !== "string" || !value.trim() || value.trim().length > max)
     throw new Error(`${label} wajib diisi, maksimal ${max} karakter.`);
   return value.trim();
 }
+/** @param {string} value */
 export function parseProductQR(value) {
   // Tetap menerima label lama SOUVENIR:UUID, lalu mencoba format tautan produk.
   const match =
@@ -21,6 +25,7 @@ export function parseProductQR(value) {
   if (match) return match[1].toLowerCase();
   return parseProductLink(value).productId;
 }
+/** @param {string} value */
 export function parseProductLink(value) {
   // Ambil identitas produk dan mode dari URL yang valid; fungsi ini tidak menulis stok.
   try {
@@ -47,6 +52,7 @@ export function parseProductLink(value) {
     );
   }
 }
+/** @param {string} origin @param {string} productId @param {string} [mode] */
 export function productLink(origin, productId, mode = "out") {
   const url = new URL("/", origin);
   url.searchParams.set("product", productId);
@@ -54,6 +60,7 @@ export function productLink(origin, productId, mode = "out") {
   parseProductLink(url.href);
   return url.href;
 }
+/** @param {string} timestamp @param {string} from @param {string} to */
 export function inDateRange(timestamp, from, to) {
   // Bandingkan tanggal kalender WIB supaya filter tidak bergeser karena zona waktu perangkat.
   const date = new Intl.DateTimeFormat("en-CA", {

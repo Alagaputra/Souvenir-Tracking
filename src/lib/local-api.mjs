@@ -1,115 +1,13 @@
+// @ts-check
 import { query, databaseConfigured } from "./local-db.mjs";
-import {
-  hashPassword,
-  verifyPassword,
-  newSession,
-  tokenHash,
-  readSession,
-  sessionCookie,
-  SESSION_SECONDS,
-} from "./local-security.mjs";
+import { hashPassword } from "./local-security.mjs";
 import { positiveInteger, requiredText } from "./domain.mjs";
+import { fail, json, sameOrigin, uuid, readBody, readUpload, HttpError } from "./http.mjs";
+import { authenticated, login, logout, profileFields } from "./auth-api.mjs";
+import { history, monthlySummary } from "./history-api.mjs";
+import { changePassword } from "./account-api.mjs";
 
-// Alur backend: route Next.js -> handleAPI -> validasi/sesi -> query PostgreSQL.
-// Perubahan stok dipusatkan di fungsi SQL souv.write_action pada 001_initial.sql;
-// modul ini menyiapkan payload dan mengubah hasilnya menjadi respons HTTP.
-function fail(message, status = 400) {
-  const error = new Error(message);
-  error.status = status;
-  throw error;
-}
-function json(body, status = 200, headers = {}) {
-  return Response.json(body, {
-    status,
-    headers: { "Cache-Control": "no-store", ...headers },
-  });
-}
-function sameOrigin(request) {
-  // Semua aksi tulis harus berasal dari origin aplikasi yang menerima permintaan.
-  if (request.headers.get("origin") !== new URL(request.url).origin)
-    fail("Akses tidak diizinkan.", 403);
-}
-function uuid(value, label = "Identitas") {
-  if (
-    typeof value !== "string" ||
-    !/^[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}$/i.test(
-      value,
-    )
-  )
-    fail(`${label} tidak valid.`);
-  return value.toLowerCase();
-}
-function profileFields(alias = "u") {
-  return `${alias}.id,${alias}.name,${alias}.email,${alias}.role,${alias}.active`;
-}
-export async function authenticated(request) {
-  // Cookie membawa token asli; database hanya menyimpan hash dan masa berlaku sesi.
-  // Status akun diperiksa setiap kali API diakses agar akun nonaktif langsung ditolak.
-  const token = readSession(request);
-  if (!token) fail("Silakan masuk kembali.", 401);
-  const users = await query(
-    `SELECT ${profileFields()} FROM souv.sessions s JOIN souv.users u ON u.id=s.user_id WHERE s.token_hash=$1 AND s.expires_at>now() AND u.active`,
-    [tokenHash(token)],
-  );
-  if (!users[0]) fail("Silakan masuk kembali.", 401);
-  return users[0];
-}
-async function login(request) {
-  sameOrigin(request);
-  const body = await request.json();
-  if (
-    typeof body.email !== "string" ||
-    typeof body.password !== "string" ||
-    body.email.length > 254 ||
-    body.password.length > 256
-  )
-    fail("Email atau password tidak valid.");
-  const email = body.email.trim().toLowerCase();
-  // Hitung percobaan sebelum memeriksa password; pembatasan berlaku per hash email.
-  const attempt = (
-    await query("SELECT souv.claim_login_attempt($1) AS allowed", [
-      tokenHash(email),
-    ])
-  )[0];
-  if (!attempt.allowed)
-    fail("Terlalu banyak percobaan. Coba lagi dalam 15 menit.", 429);
-  const user = (
-    await query(
-      "SELECT id,password_hash,active FROM souv.users WHERE email=$1",
-      [email],
-    )
-  )[0];
-  if (
-    !(await verifyPassword(body.password, user?.password_hash)) ||
-    !user?.active
-  )
-    fail("Email atau password salah, atau akun tidak aktif.", 401);
-  const token = newSession();
-  // Periksa ulang akun sambil mengunci baca agar sesi tidak dibuat untuk akun
-  // yang dinonaktifkan bersamaan. Token asli hanya dikirim melalui cookie HttpOnly.
-  const sessions = await query(
-    `WITH live AS (SELECT id FROM souv.users WHERE id=$1::uuid AND active FOR SHARE), inserted AS (INSERT INTO souv.sessions(token_hash,user_id,expires_at) SELECT $2,id,now()+($3::integer*interval '1 second') FROM live RETURNING user_id) SELECT user_id FROM inserted`,
-    [user.id, tokenHash(token), SESSION_SECONDS],
-  );
-  if (!sessions[0]) fail("Akun tidak aktif.", 401);
-  await query(
-    "WITH cleaned AS (DELETE FROM souv.login_attempts WHERE key=$1) SELECT 1 AS ok",
-    [tokenHash(email)],
-  );
-  return json({ ok: true }, 200, {
-    "Set-Cookie": sessionCookie(request, token),
-  });
-}
-async function logout(request) {
-  sameOrigin(request);
-  const token = readSession(request);
-  if (token)
-    await query(
-      "WITH deleted AS (DELETE FROM souv.sessions WHERE token_hash=$1) SELECT 1 AS ok",
-      [tokenHash(token)],
-    );
-  return json({ ok: true }, 200, { "Set-Cookie": sessionCookie(request) });
-}
+/** @param {Request} request */
 async function workspace(request) {
   // Tanpa konfigurasi database, frontend menerima penanda untuk membuka mode demo.
   if (!databaseConfigured()) return json({ setup: true });
@@ -117,20 +15,22 @@ async function workspace(request) {
   const products = await query("SELECT * FROM souv.products ORDER BY name");
   const movements = await query(
     // Admin melihat seluruh tim; anggota hanya menerima transaksi miliknya.
-    `SELECT id,product_id,actor_id,kind,quantity,recipient,note,created_at,reversal_of,cancelled,product_name,product_sku,actor_name FROM souv.movements WHERE ($1::boolean OR actor_id=$2::uuid) ORDER BY created_at DESC,id DESC LIMIT 5000`,
+    `SELECT id,product_id,actor_id,kind,quantity,recipient,note,created_at,reversal_of,cancelled,product_name,product_sku,actor_name FROM souv.movements WHERE ($1::boolean OR actor_id=$2::uuid) ORDER BY created_at DESC,id DESC LIMIT 25`,
     [user.role === "admin", user.id],
   );
   const members =
     user.role === "admin"
       ? await query(`SELECT ${profileFields()} FROM souv.users u ORDER BY name`)
       : [user];
-  return json({ user, products, movements, members, demo: false });
+  const summary = await monthlySummary(user);
+  return json({ user, products, movements, members, summary, demo: false });
 }
+/** @param {Request} request */
 async function stockRegister(request) {
   const user = await authenticated(request);
   if (user.role !== "admin") fail("Akses tidak diizinkan.", 403);
   // Satu query mengambil stok dan seluruh riwayat dari snapshot database yang sama.
-  // Register tidak memakai batas 5.000 transaksi seperti tampilan workspace.
+  // Register mengambil seluruh riwayat dari snapshot yang sama.
   const [row] = await query(`SELECT jsonb_build_object(
     'products',COALESCE((SELECT jsonb_agg(p ORDER BY p.name,p.id) FROM souv.products p),'[]'::jsonb),
     'movements',COALESCE((SELECT jsonb_agg(m ORDER BY m.created_at,m.id) FROM (
@@ -141,11 +41,12 @@ async function stockRegister(request) {
   ) AS register`);
   return json(row.register);
 }
+/** @param {Record<string, unknown>} body */
 function movement(body) {
   // in/out menerima jumlah positif; adjust menerima stok fisik tujuan (boleh nol).
   // Untuk reversal, database mencari transaksi asal dan menghitung nilai pembaliknya.
   const kind = body.kind;
-  if (!["in", "out", "adjust", "reversal"].includes(kind))
+  if (typeof kind !== "string" || !["in", "out", "adjust", "reversal"].includes(kind))
     fail("Jenis pencatatan tidak valid.");
   const quantity =
     kind === "reversal"
@@ -171,11 +72,12 @@ function movement(body) {
           .slice(0, 500),
   };
 }
+/** @param {Request} request */
 async function writeWorkspace(request) {
   // Urutan simpan: cek origin -> cek sesi/peran -> validasi payload -> fungsi SQL.
   sameOrigin(request);
   const user = await authenticated(request);
-  const body = await request.json();
+  const body = await readBody(request);
   let action;
   if (body.action === "movement") {
     action = movement(body);
@@ -202,7 +104,7 @@ async function writeWorkspace(request) {
       photo &&
       !(
         await query("SELECT id FROM souv.photos WHERE id=$1::uuid", [
-          uuid(photo.split("/").pop()),
+          uuid(String(photo).split("/").pop()),
         ])
       )[0]
     )
@@ -237,13 +139,14 @@ async function writeWorkspace(request) {
   // mencatat riwayat secara atomik. Pengulangan payload yang sama tidak menambah stok lagi.
   return json({ ok: true });
 }
+/** @param {Request} request */
 async function members(request) {
   // ID terisi berarti mengubah status akun; tanpa ID berarti membuat akun baru.
   // Password akun baru di-hash di server sebelum diteruskan ke database.
   sameOrigin(request);
   const user = await authenticated(request);
   if (user.role !== "admin") fail("Akses tidak diizinkan.", 403);
-  const body = await request.json();
+  const body = await readBody(request);
   let action;
   if (body.id) {
     if (typeof body.active !== "boolean") fail("Status tidak valid.");
@@ -258,7 +161,7 @@ async function members(request) {
       body.password.length > 128
     )
       fail("Password harus 12–128 karakter.");
-    if (!["admin", "member"].includes(body.role)) fail("Peran tidak valid.");
+    if (typeof body.role !== "string" || !["admin", "member"].includes(body.role)) fail("Peran tidak valid.");
     action = {
       action: "member",
       name: requiredText(body.name, "Nama anggota"),
@@ -273,11 +176,12 @@ async function members(request) {
   ]);
   return json({ ok: true });
 }
+/** @param {Request} request */
 async function upload(request) {
   sameOrigin(request);
   const user = await authenticated(request);
   if (user.role !== "admin") fail("Akses tidak diizinkan.", 403);
-  const file = (await request.formData()).get("file");
+  const file = (await readUpload(request)).get("file");
   if (
     !(file instanceof File) ||
     !["image/jpeg", "image/png", "image/webp"].includes(file.type) ||
@@ -305,6 +209,7 @@ async function upload(request) {
   )[0];
   return json({ url: `/api/photos/${result.id}` });
 }
+/** @param {Request} request @param {string} id */
 async function photo(request, id) {
   await authenticated(request);
   const row = (
@@ -323,6 +228,7 @@ async function photo(request, id) {
   });
 }
 
+/** @param {Request} request */
 export async function handleAPI(request) {
   // Semua route API memakai dispatcher ini agar format respons dan error konsisten.
   try {
@@ -330,6 +236,8 @@ export async function handleAPI(request) {
       method = request.method;
     if (path === "/api/workspace" && method === "GET")
       return await workspace(request);
+    if (path === "/api/history" && method === "GET") return await history(request);
+    if (path === "/api/account" && method === "POST") return await changePassword(request);
     if (path === "/api/register" && method === "GET")
       return await stockRegister(request);
     if (path === "/api/workspace" && method === "POST")
@@ -345,17 +253,9 @@ export async function handleAPI(request) {
       return await photo(request, path.slice("/api/photos/".length));
     return json({ error: "Endpoint tidak ditemukan." }, 404);
   } catch (error) {
-    const status = error.status || 400;
-    return json(
-      {
-        error:
-          error instanceof SyntaxError
-            ? "Format permintaan tidak valid."
-            : error.message === "LOCAL_DB_NOT_CONFIGURED"
-              ? "PostgreSQL belum disiapkan. Jalankan npm run db:setup."
-              : error.message || "Permintaan tidak dapat diproses.",
-      },
-      status,
-    );
+    if (error instanceof HttpError) return json({ error: error.message }, error.status);
+    if (error instanceof SyntaxError) return json({ error: "Format permintaan tidak valid." }, 400);
+    console.error(JSON.stringify({ event: "api_error", path: new URL(request.url).pathname, type: error instanceof Error ? error.name : "unknown" }));
+    return json({ error: "Terjadi kesalahan pada server. Silakan coba lagi." }, 500);
   }
 }

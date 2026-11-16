@@ -9,6 +9,7 @@ out/
 
 # Generated files and test reports
 *.tsbuildinfo
+/src/next-env.d.ts
 playwright-report/
 test-results/
 coverage/

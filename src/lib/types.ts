@@ -37,4 +37,5 @@ export type Snapshot = {
   movements: Movement[];
   members: Profile[];
   demo: boolean;
+  summary?: { incoming: number; given: number };
 };

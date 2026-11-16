@@ -1,3 +1,4 @@
+import { mockHistory } from "./history-fixture";
 import { test, expect, type Page } from "@playwright/test";
 import { readFile } from "node:fs/promises";
 import JSZip from "jszip";
@@ -14,6 +15,7 @@ async function navigate(page: Page, target: "products" | "history") {
 test("register download includes recap and every product despite empty history filters", async ({ page }) => {
   const snapshot = { ...demoSnapshot(), demo: false };
   const full = demoRegister();
+  await mockHistory(page, snapshot);
   let requests = 0;
   await page.route("**/api/workspace", route => route.fulfill({ json: snapshot }));
   await page.route("**/api/register", route => { requests++; return route.fulfill({ json: full }); });
@@ -60,7 +62,7 @@ test("product register export prevents double requests and allows retry after a 
   await expect.poll(()=>calls).toBe(1);
   await expect(page.getByRole("button",{name:"Menyiapkan Excel…",exact:true})).toBeDisabled();
   release();
-  await expect(page.getByRole("alert")).toContainText("Database sedang tidak tersedia");
+  await expect(page.locator(".app-shell").getByRole("alert")).toContainText("Database sedang tidak tersedia");
   const button=page.getByRole("button",{name:"Ekspor register",exact:true});
   await expect(button).toBeEnabled();
   const download=page.waitForEvent("download");
@@ -78,6 +80,7 @@ test("demo exports a reconciled register and members keep only their history exp
   expect((await download).suggestedFilename()).toMatch(/^register-souvenir-\d{8}-\d{6}\.xlsx$/);
   const snapshot={...demoSnapshot(),demo:false};
   snapshot.user=snapshot.members.find(m=>m.role==="member")!;
+  await mockHistory(page, snapshot);
   await page.route("**/api/workspace",route=>route.fulfill({json:snapshot}));
   await page.reload();
   await navigate(page,"history");

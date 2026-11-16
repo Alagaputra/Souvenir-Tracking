@@ -1,11 +1,13 @@
 import { existsSync } from "node:fs";
-import { readFile, writeFile, mkdir, unlink, readdir } from "node:fs/promises";
+import { readFile, writeFile, mkdir, unlink } from "node:fs/promises";
 import { resolve, join } from "node:path";
 import { execFile } from "node:child_process";
 import { promisify } from "node:util";
-import { randomBytes, createHash } from "node:crypto";
+import { randomBytes } from "node:crypto";
 import { hashPassword } from "../lib/local-security.mjs";
-import { executeSQL, query, databaseOptions } from "../lib/local-db.mjs";
+import { adminEnvPath } from "./admin-env.mjs";
+import { migrateDatabase, provisionRuntime } from "./database-admin.mjs";
+import { executeSQL, query, databaseOptions, closeDatabase } from "../lib/local-db.mjs";
 const exec = promisify(execFile);
 const root = resolve(import.meta.dirname, ".."),
   runtimeRoot = resolve(root, "../.local"),
@@ -23,6 +25,11 @@ async function save(values) {
   await writeFile(envPath, text, { mode: 0o600 });
 }
 async function setup() {
+  const originalRuntime = process.env.DATABASE_URL;
+  if (existsSync(adminEnvPath)) process.loadEnvFile(adminEnvPath);
+  if (process.env.DATABASE_ADMIN_URL) process.env.DATABASE_URL = process.env.DATABASE_ADMIN_URL;
+  if (process.env.DATABASE_URL && new URL(process.env.DATABASE_URL).username.startsWith("souv_app_"))
+    throw new Error("Kredensial admin tidak ditemukan. Pulihkan .local/database-admin.env; akun aplikasi tidak dapat menjalankan migrasi.");
   const owned = join(runtimeRoot, "postgres"),
     binaryDir =
       process.env.POSTGRES_BIN || "C:/Program Files/PostgreSQL/18/bin";
@@ -43,10 +50,13 @@ async function setup() {
       POSTGRES_BIN: binaryDir.replaceAll("\\", "/"),
     });
   }
+  await mkdir(runtimeRoot, { recursive: true });
+  // Store owner credentials outside Next.js environment files.
+  await writeFile(adminEnvPath, 'DATABASE_ADMIN_URL=' + process.env.DATABASE_URL + '\n', { mode: 0o600 });
   const options = databaseOptions();
   const url = new URL(process.env.DATABASE_URL);
   const ownCluster =
-    url.port === "55432" &&
+    ["127.0.0.1", "localhost"].includes(url.hostname) && url.port === "55432" &&
     url.username === "souv_owner" &&
     url.pathname === "/souvenir_tracking";
   if (ownCluster) {
@@ -128,27 +138,7 @@ async function setup() {
       });
     console.log("OK: PostgreSQL proyek berjalan di 127.0.0.1:55432.");
   }
-  const migrationDir = join(root, "db/migrations");
-  const migrationFiles = (await readdir(migrationDir))
-    .filter((file) => /^\d{3}_[a-z0-9_]+\.sql$/.test(file))
-    .sort();
-  const migrations = [];
-  for (const file of migrationFiles) {
-    const version = file.slice(0, 3);
-    const sql = await readFile(join(migrationDir, file), "utf8");
-    const digest = createHash("sha256").update(sql).digest("hex");
-    migrations.push(`DO $souv_migration$ BEGIN
-IF EXISTS(SELECT 1 FROM souv.schema_migrations WHERE version='${version}' AND checksum<>'${digest}') THEN
-RAISE EXCEPTION 'SOUV:Migrasi ${version} sudah pernah diterapkan dengan isi berbeda. Tambahkan migrasi baru; database tidak ditimpa.';
-END IF;
-IF NOT EXISTS(SELECT 1 FROM souv.schema_migrations WHERE version='${version}') THEN
-EXECUTE $souv_ddl$${sql}$souv_ddl$;
-INSERT INTO souv.schema_migrations(version,checksum)VALUES('${version}','${digest}');
-END IF; END $souv_migration$;`);
-  }
-  await executeSQL(`BEGIN; SELECT pg_advisory_xact_lock(55432001); CREATE SCHEMA IF NOT EXISTS souv; CREATE TABLE IF NOT EXISTS souv.schema_migrations(version text PRIMARY KEY,checksum text NOT NULL);
-${migrations.join("\n")}
-COMMIT;`);
+  await migrateDatabase(process.env.DATABASE_URL);
   const adminPassword =
     process.env.LOCAL_ADMIN_PASSWORD || randomBytes(18).toString("base64url");
   const memberPassword =
@@ -175,6 +165,7 @@ COMMIT;`);
       memberPassword,
     ],
   ]) {
+    if (role === "member" && process.env.SEED_DEMO_DATA !== "1") continue;
     await query(
       "WITH added AS (INSERT INTO souv.users(id,email,name,role,password_hash) VALUES($1::uuid,$2,$3,$4,$5) ON CONFLICT(email)DO NOTHING RETURNING id) SELECT count(*) AS added FROM added",
       [id, email, name, role, await hashPassword(password)],
@@ -196,7 +187,7 @@ COMMIT;`);
     ])
   )[0];
   // Remember completed bootstrap so deleted starter products stay deleted.
-  for (let i = 0; process.env.LOCAL_PRODUCTS_SEEDED !== "1" && i < rows.length; i++) {
+  for (let i = 0; process.env.SEED_DEMO_DATA === "1" && process.env.LOCAL_PRODUCTS_SEEDED !== "1" && i < rows.length; i++) {
     const [sku, name, category, minimum, quantity] = rows[i],
       suffix = String(i + 1).padStart(12, "0"),
       id = `10000000-0000-4000-8000-${suffix}`;
@@ -219,19 +210,15 @@ COMMIT;`);
         }),
       ]);
   }
-  if (process.env.LOCAL_PRODUCTS_SEEDED !== "1")
+  if (process.env.SEED_DEMO_DATA === "1" && process.env.LOCAL_PRODUCTS_SEEDED !== "1")
     await save({ LOCAL_PRODUCTS_SEEDED: "1" });
-  console.log(
-    "OK: schema, akun, dan stok awal siap. Password akun tersimpan di .env.local; tidak dicetak ke terminal.",
-  );
+  const runtimeURL = await provisionRuntime(process.env.DATABASE_URL, originalRuntime);
+  await save({ DATABASE_URL: runtimeURL });
+  await closeDatabase();
+  console.log("OK: migrasi, akun, dan stok siap. Aplikasi memakai akun database terbatas; kredensial admin tersimpan di .local/database-admin.env.");
 }
-setup().catch((error) => {
-  let message =
-    error.stderr?.trim() || error.message || "Setup PostgreSQL gagal.";
-  const password = process.env.DATABASE_URL
-    ? decodeURIComponent(new URL(process.env.DATABASE_URL).password)
-    : "";
-  if (password) message = message.replaceAll(password, "[redacted]");
-  console.error(message.slice(0, 1800));
+setup().catch(async (error) => {
+  await closeDatabase();
+  console.error(error.message?.startsWith("SOUV:") || /Migrasi|Kredensial admin|Cluster lokal|initdb belum|Perintah administrasi/.test(error.message || "") ? error.message : "Setup gagal. Periksa koneksi admin dan instalasi PostgreSQL.");
   process.exitCode = 1;
 });

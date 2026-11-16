@@ -1,21 +1,24 @@
 import { defineConfig, devices } from "@playwright/test";
+const port = Number(process.env.E2E_PORT || 3100);
 export default defineConfig({
   testDir: "./tests/browser",
   outputDir: "../arsip-lokal/test-results",
   fullyParallel: false,
+  workers: process.env.CI ? 2 : 3,
   reporter: "list",
   use: {
     launchOptions: process.env.PLAYWRIGHT_CHROMIUM_EXECUTABLE_PATH
       ? { executablePath: process.env.PLAYWRIGHT_CHROMIUM_EXECUTABLE_PATH }
       : {},
-    baseURL: "http://127.0.0.1:3000",
+    baseURL: `http://127.0.0.1:${port}`,
     screenshot: "only-on-failure",
     trace: "retain-on-failure",
   },
   webServer: {
-    command: process.env.DEMO_PREVIEW ? "npm run preview:demo" : "npm run dev",
-    url: "http://127.0.0.1:3000",
-    reuseExistingServer: !process.env.CI,
+    command: process.env.DEMO_PREVIEW ? "npm run preview:demo" : `npm run dev -- --port ${port}`,
+    env: { PORT: String(port) },
+    url: `http://127.0.0.1:${port}`,
+    reuseExistingServer: false,
     timeout: 60000,
   },
   projects: [

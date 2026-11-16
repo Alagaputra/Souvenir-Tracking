@@ -1,160 +1,80 @@
+// @ts-check
+import pg from "pg";
 import { execFile } from "node:child_process";
 import { existsSync } from "node:fs";
 import { join } from "node:path";
+import { HttpError } from "./http.mjs";
 
-// Adapter server: baca koneksi lokal -> jalankan psql -> kembalikan baris sebagai JSON.
-// Aplikasi tidak memakai koneksi pool/driver PostgreSQL; setiap eksekusi membuka psql.
-export function databaseConfigured() {
-  return !!process.env.DATABASE_URL?.trim();
-}
-export function databaseOptions() {
-  // Kredensial diteruskan lewat environment proses anak, bukan argumen command line.
-  if (!databaseConfigured()) throw new Error("LOCAL_DB_NOT_CONFIGURED");
+export function databaseConfigured() { return !!process.env.DATABASE_URL?.trim(); }
+/** @param {string | undefined} [connectionString] */
+export function databaseURL(connectionString = process.env.DATABASE_URL) {
+  if (!connectionString?.trim()) throw new HttpError("PostgreSQL belum disiapkan. Jalankan npm run db:setup.", 503);
   let url;
-  try {
-    url = new URL(process.env.DATABASE_URL);
-  } catch {
-    throw new Error("DATABASE_URL tidak valid.");
-  }
-  if (
-    !["postgres:", "postgresql:"].includes(url.protocol) ||
-    !["localhost", "127.0.0.1", "[::1]"].includes(url.hostname)
-  )
-    throw new Error(
-      "Proyek ini menggunakan PostgreSQL lokal. Gunakan host localhost atau 127.0.0.1.",
-    );
-  const binaryDir =
-    process.env.POSTGRES_BIN || "C:/Program Files/PostgreSQL/18/bin";
-  const executable = join(
-    binaryDir,
-    process.platform === "win32" ? "psql.exe" : "psql",
-  );
-  return {
-    executable: existsSync(executable) ? executable : "psql",
-    env: {
-      ...process.env,
-      PGHOST: url.hostname,
-      PGPORT: url.port || "5432",
-      PGUSER: decodeURIComponent(url.username),
-      PGPASSWORD: decodeURIComponent(url.password),
-      PGDATABASE: decodeURIComponent(url.pathname.slice(1)),
-      PGCONNECT_TIMEOUT: "5",
-      PGCLIENTENCODING: "UTF8",
-    },
-  };
+  try { url = new URL(connectionString); } catch { throw new HttpError("DATABASE_URL tidak valid.", 503); }
+  if (!["postgres:", "postgresql:"].includes(url.protocol) || !url.hostname || url.pathname.length < 2)
+    throw new HttpError("DATABASE_URL tidak valid.", 503);
+  return url;
 }
-
-// Nilai dikirim melalui stdin. Teks diubah menjadi ekspresi SQL berbasis Base64;
-// pembentukan literal dipusatkan di sini agar input tidak disisipkan sebagai SQL mentah.
-function literal(value) {
-  if (value === null || value === undefined) return "NULL";
-  if (typeof value === "boolean") return value ? "TRUE" : "FALSE";
-  if (typeof value === "number") {
-    if (!Number.isSafeInteger(value))
-      throw new Error("Angka database tidak valid.");
-    return String(value);
-  }
-  const text = typeof value === "string" ? value : JSON.stringify(value);
-  return `convert_from(decode('${Buffer.from(text, "utf8").toString("base64")}','base64'),'UTF8')`;
+// Only administration tools use psql; application queries use the pool below.
+/** @param {string | undefined} [connectionString] */
+export function databaseOptions(connectionString = process.env.DATABASE_URL) {
+  const url = databaseURL(connectionString);
+  const executable = join(process.env.POSTGRES_BIN || "C:/Program Files/PostgreSQL/18/bin", process.platform === "win32" ? "psql.exe" : "psql");
+  return { executable: existsSync(executable) ? executable : "psql", env: {
+    ...process.env, PGHOST: url.hostname.replace(/^\[|\]$/g, ""), PGPORT: url.port || "5432",
+    PGUSER: decodeURIComponent(url.username), PGPASSWORD: decodeURIComponent(url.password),
+    PGDATABASE: decodeURIComponent(url.pathname.slice(1)), PGCONNECT_TIMEOUT: "5", PGCLIENTENCODING: "UTF8",
+    ...(url.searchParams.has("sslmode") ? { PGSSLMODE: url.searchParams.get("sslmode") || "verify-full" } : {}),
+  } };
 }
-export async function executeSQL(sql) {
-  const { executable, env } = databaseOptions();
-  try {
-    // -X mengabaikan konfigurasi psql pengguna; ON_ERROR_STOP menghentikan SQL saat gagal.
-    const child = execFile(
-      executable,
-      [
-        "-X",
-        "-w",
-        "-A",
-        "-t",
-        "-q",
-        "-P",
-        "pager=off",
-        "-v",
-        "ON_ERROR_STOP=1",
-      ],
-      { env, windowsHide: true, timeout: 20000, maxBuffer: 32 * 1024 * 1024 },
-    );
-    const result = new Promise((resolve, reject) => {
-      let stdout = "",
-        stderr = "";
-      child.stdout.on("data", (chunk) => {
-        stdout += chunk;
-        if (stdout.length > 32 * 1024 * 1024) child.kill();
-      });
-      child.stderr.on("data", (chunk) => {
-        stderr += chunk;
-      });
-      child.on("error", reject);
-      child.on("close", (code) => {
-        if (code === 0) resolve(stdout);
-        else {
-          const domain = /SOUV:([^\r\n]+)/.exec(stderr);
-          // Fungsi SQL memberi awalan SOUV: untuk pesan bisnis yang boleh tampil di UI.
-          const error = new Error(
-            domain
-              ? domain[1].trim()
-              : /duplicate key/i.test(stderr)
-                ? "Kode barang atau email sudah digunakan."
-                : /does not exist|undefined/i.test(stderr)
-                  ? "Database belum disiapkan. Jalankan npm run db:setup."
-                  : "PostgreSQL lokal tidak dapat diakses atau permintaan database gagal.",
-          );
-          error.status = domain || /duplicate key/i.test(stderr) ? 400 : 503;
-          reject(error);
-        }
-      });
-    });
-    child.stdin.on("error", () => {});
-    child.stdin.end(sql + "\n");
-    return await result;
-  } catch (error) {
-    if (error.status) throw error;
-    const failure = new Error(
-      "PostgreSQL lokal tidak dapat dihubungi. Periksa database dan lokasi psql.",
-    );
-    failure.status = 503;
-    throw failure;
-  }
+/** @param {unknown} error @returns {HttpError} */
+function databaseError(error) {
+  if (error instanceof HttpError) return error;
+  const detail = error && typeof error === "object" ? error : {};
+  const code = "code" in detail ? String(detail.code) : "unknown";
+  const message = "message" in detail ? String(detail.message) : "";
+  const domain = /^SOUV:(.+)$/.exec(message);
+  if (domain) return new HttpError(domain[1].trim());
+  if (code === "23505") return new HttpError("Kode barang atau email sudah digunakan.");
+  if (code === "23503") return new HttpError("Data masih digunakan oleh catatan lain.");
+  console.error(JSON.stringify({ event: "database_error", code }));
+  return new HttpError("Database tidak dapat diakses atau permintaan database gagal.", 503);
 }
+/** @type {Map<string, import('pg').Pool>} */
+const pools = globalThis.__souvPools ??= new Map();
+function pool() {
+  const connectionString = databaseURL().href;
+  let instance = pools.get(connectionString);
+  if (!instance) {
+    instance = new pg.Pool({ connectionString, max: 10, connectionTimeoutMillis: 5000,
+      idleTimeoutMillis: 10000, statement_timeout: 20000, allowExitOnIdle: true });
+    instance.on("error", error => { databaseError(error); });
+    pools.set(connectionString, instance);
+  }
+  return instance;
+}
+/** Parameters are sent separately using the PostgreSQL protocol.
+ * @template {import('pg').QueryResultRow} [T=import('pg').QueryResultRow]
+ * @param {string} sql @param {unknown[]} [values] @returns {Promise<T[]>}
+ */
 export async function query(sql, values = []) {
-  // Ganti placeholder $1, $2, ... dengan literal dari adapter, lalu bungkus SELECT
-  // menjadi array JSON agar pemanggil selalu menerima bentuk data yang sama.
-  const bound = sql.replace(/\$(\d+)\b/g, (_, index) => {
-    if (Number(index) > values.length)
-      throw new Error("Parameter database tidak lengkap.");
-    return literal(values[Number(index) - 1]);
+  try { return (await pool().query(sql, values)).rows; }
+  catch (error) { throw databaseError(error); }
+}
+export async function closeDatabase() {
+  const active = [...pools.values()]; pools.clear();
+  await Promise.all(active.map(instance => instance.end()));
+}
+/** @param {string} sql @param {string | undefined} [connectionString] @returns {Promise<string>} */
+export async function executeSQL(sql, connectionString = process.env.DATABASE_URL) {
+  const { executable, env } = databaseOptions(connectionString);
+  return new Promise((resolve, reject) => {
+    const child = execFile(executable, ["-X", "-w", "-A", "-t", "-q", "-P", "pager=off", "-v", "ON_ERROR_STOP=1"],
+      { env, windowsHide: true, timeout: 60000, maxBuffer: 32 * 1024 * 1024 }, (error, stdout, stderr) => {
+        if (!error) { resolve(stdout); return; }
+        const domain = /SOUV:([^\r\n]+)/.exec(stderr);
+        reject(new HttpError(domain?.[1]?.trim() || "Perintah administrasi database gagal. Periksa koneksi dan lokasi psql.", domain ? 400 : 503));
+      });
+    child.stdin?.on("error", () => {}); child.stdin?.end(sql + "\n");
   });
-  // CTE yang menulis data harus tetap berada di tingkat teratas PostgreSQL.
-  // Pisahkan WITH dari SELECT akhir; hanya SELECT akhir yang dibungkus menjadi JSON.
-  let prefix = "",
-    select = bound;
-  if (/^WITH\b/i.test(bound)) {
-    let depth = 0,
-      quoted = false;
-    for (let i = 0; i < bound.length; i++) {
-      if (bound[i] === "'") {
-        if (quoted && bound[i + 1] === "'") {
-          i++;
-          continue;
-        }
-        quoted = !quoted;
-        continue;
-      }
-      if (quoted) continue;
-      if (bound[i] === "(") depth++;
-      else if (bound[i] === ")") depth--;
-      else if (depth === 0 && /^SELECT\b/i.test(bound.slice(i))) {
-        prefix = bound.slice(0, i);
-        select = bound.slice(i);
-        break;
-      }
-    }
-    if (!prefix) throw new Error("Query WITH harus diakhiri SELECT.");
-  }
-  const result = await executeSQL(
-    `${prefix} SELECT COALESCE(json_agg(__souv_result),'[]'::json) FROM (${select}) AS __souv_result;`,
-  );
-  return JSON.parse(result.trim());
 }

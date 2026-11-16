@@ -182,7 +182,7 @@ test("camera is mobile only and desktop opens the product form", async ({
   await expect(page.locator(".main-shell")).toHaveClass(
     "main-shell page-dashboard",
   );
-  await expect(page.getByRole("alert")).toContainText("izin ditolak");
+  await expect(page.locator(".app-shell").getByRole("alert")).toContainText("izin ditolak");
   await page.getByRole("button", { name: "Tutup", exact: true }).click();
   await expect(page.getByRole("dialog")).not.toBeVisible();
 });
@@ -245,5 +245,5 @@ test("demo never pretends to save a stock withdrawal", async ({ page }) => {
   await page
     .getByRole("button", { name: "Konfirmasi pemberian", exact: true })
     .click();
-  await expect(page.getByRole("alert")).toContainText("pratinjau data contoh");
+  await expect(page.locator(".app-shell").getByRole("alert")).toContainText("pratinjau data contoh");
 });
